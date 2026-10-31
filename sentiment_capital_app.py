@@ -1,404 +1,187 @@
-# ============================================================
-# 🧠 SENTIMENT & CAPITAL INTELLIGENCE - STREAMLIT APP
-#
-# Run:   .\.venv\Scripts\python.exe -m streamlit run sentiment_capital_app.py
-#
-# Engines: LR + SVM Ensemble, Logistic Regression, Linear SVC,
-#          Federated (FedAvg SGD), Deep Learning LSTM
-# Tabs:    Predict | Batch CSV | Model Performance | About
-#
-# Saare sklearn models text_preprocessing.clean_text se train hue hain:
-# emojis remove NAHI hote, wo prediction mein features ki tarah use hote hain.
-# ============================================================
-import json
-import os
-import pickle
-import re
+"""
+MULTI-MODEL SENTIMENT & CAPITAL INTEL SYSTEM  -  Streamlit app
 
-import numpy as np
+Run locally:   streamlit run sentiment_capital_app.py
+Streamlit Cloud: Main file path = sentiment_capital_app.py
+"""
+import html
+
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from text_preprocessing import clean_text
+import model_engine as M
 
-st.set_page_config(page_title="Sentiment & Capital Intelligence", page_icon="🧠", layout="wide")
+st.set_page_config(page_title="Multi-Model Sentiment & Capital Intel System",
+                   page_icon="🧠", layout="wide", initial_sidebar_state="collapsed")
 
-ENGINES = ["LR + SVM Ensemble", "Logistic Regression", "Linear SVC",
-           "Federated (FedAvg SGD)", "Deep Learning LSTM"]
-EXAMPLES = [
-    "😊 My team is doing amazing work 🚀",
-    "😞 My business is losing money 📉",
-    "Financial growth is not good",
-    "🎓 Years of practical work built my confidence!",
-    "🙏 My faith gives me peace and strength every day",
-]
-POS_COLOR, NEG_COLOR, ACCENT = "#22c55e", "#ef4444", "#38bdf8"
+# ------------------------------------------------------------------ style
+BG, ROW, TRACK, CYAN, BLUE = "#0f172a", "#1e293b", "#334155", "#38bdf8", "#3b82f6"
 
-
-# ============================================================
-# 📂 MODEL LOADING (cached - sirf ek baar load hote hain)
-# ============================================================
-def _load_pickle(path):
-    with open(path, "rb") as f:
-        return pickle.load(f)
-
-
-@st.cache_resource(show_spinner="Loading LR / SVM / Federated models...")
-def load_sklearn_models():
-    return {
-        "lr_sent": _load_pickle("sentiment_lr_model.pkl"),
-        "lr_cap": _load_pickle("capital_lr_model.pkl"),
-        "svm_sent": _load_pickle("sentiment_svm_model.pkl"),
-        "svm_cap": _load_pickle("capital_svm_model.pkl"),
-        "fed_sent": _load_pickle("federated_sentiment_model.pkl"),
-        "fed_cap": _load_pickle("federated_capital_model.pkl"),
-    }
-
-
-@st.cache_resource(show_spinner="Loading LSTM models (TensorFlow)...")
-def load_lstm_models():
-    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
-    from tensorflow.keras.models import load_model
-
-    sent = load_model("sentiment_lstm_model(1)_fixed.keras", compile=False, safe_mode=False)
-    cap = load_model("capital_lstm_model(1)_fixed.keras", compile=False, safe_mode=False)
-    params = _load_pickle("lstm_params.pkl") if os.path.exists("lstm_params.pkl") else {}
-    return {
-        "sent": sent,
-        "cap": cap,
-        "tokenizer": _load_pickle("lstm_tokenizer.pkl"),
-        "sent_enc": _load_pickle("sentiment_encoder.pkl"),
-        "cap_enc": _load_pickle("capital_encoder.pkl"),
-        "max_len": sent.input_shape[1],
-        # Naya (emoji-aware) LSTM shared cleaner ke saath train hua hai; purana ASCII cleaner ke saath
-        "emoji_aware": isinstance(params, dict) and params.get("cleaner") == "text_preprocessing.clean_text",
-    }
+st.markdown(f"""
+<style>
+.stApp, header[data-testid="stHeader"] {{ background:{BG}; }}
+.block-container {{ padding-top:2.5rem; max-width:1600px; }}
+h1.title {{ color:#fff; font-size:2.6rem; font-weight:800; margin:0 0 .6rem 0; }}
+h3.sec {{ color:#fff; font-size:1.55rem; font-weight:700; margin:.9rem 0 .5rem 0;
+          letter-spacing:.3px; }}
+.lbl {{ color:#fff; font-weight:700; font-size:1.05rem; margin:.9rem 0 .4rem 0; }}
+/* light selectbox like the screenshot */
+div[data-baseweb="select"] > div {{ background:#f1f5f9 !important; border-radius:8px; }}
+div[data-baseweb="select"] * {{ color:#0f172a !important; }}
+[data-testid="stSelectbox"] [role="group"] {{ background:#f1f5f9 !important; border-radius:8px; }}
+[data-testid="stSelectbox"] input, [data-testid="stSelectbox"] button svg {{
+    color:#0f172a !important; -webkit-text-fill-color:#0f172a; fill:#0f172a; }}
+/* dark text areas */
+.stTextArea textarea {{ background:{ROW}; color:#e5e7eb; font-size:1rem; }}
+.stTextArea textarea:disabled {{ color:#94a3b8; -webkit-text-fill-color:#94a3b8; }}
+/* blue full-width button */
+div.stButton > button {{ background:{BLUE}; color:#fff; border:none; border-radius:8px;
+                         height:3.2rem; }}
+div.stButton > button p {{ font-size:1.05rem; letter-spacing:.3px; }}
+div.stButton > button:hover {{ background:#2563eb; color:#fff; }}
+.verdict {{ color:#fff; font-size:3.2rem; font-weight:800; margin:.4rem 0 1rem 0; }}
+.conf {{ color:#fff; font-size:1.05rem; margin-bottom:.4rem; }}
+.cbar {{ background:#f1f5f9; height:9px; border-radius:6px; overflow:hidden; }}
+.cbar > div {{ background:{BLUE}; height:100%; }}
+hr.sep {{ border:none; border-top:1px solid #1e293b; margin:3rem 0 2rem 0; }}
+.caprow {{ display:flex; align-items:center; background:{ROW}; border-radius:6px;
+           padding:13px 18px; margin-bottom:5px; }}
+.caprow .n {{ color:#fff; font-weight:700; font-size:1.1rem; width:25%; }}
+.caprow .t {{ flex:1; background:{TRACK}; height:16px; border-radius:8px; margin:0 3%; overflow:hidden; }}
+.caprow .t > div {{ background:{CYAN}; height:100%; border-radius:8px; min-width:12px; }}
+.caprow .p {{ color:{CYAN}; font-weight:700; font-size:1.1rem; width:80px; text-align:right; }}
+</style>
+""", unsafe_allow_html=True)
 
 
-# ============================================================
-# 🧮 PROBABILITY HELPERS
-# ============================================================
-def _softmax(x):
-    e = np.exp(x - np.max(x))
-    return e / e.sum()
+# ------------------------------------------------------------------ engines (cached)
+@st.cache_resource(show_spinner="Loading models…")
+def get_engine(name: str, padding: str):
+    if name == M.ENGINE_CLASSIC:
+        return M.ClassicEngine()
+    lstm = M.LSTMEngine(padding=padding)
+    if name == M.ENGINE_LSTM:
+        return lstm
+    try:
+        classic = M.ClassicEngine()
+    except Exception:
+        classic = None
+    return M.FederatedEngine(lstm, classic)
 
 
-def _svm_proba(model, cleaned_list):
-    """LinearSVC ke decision scores -> pseudo-probabilities (binary: sigmoid, multiclass: softmax)."""
-    d = np.atleast_2d(model.decision_function(cleaned_list))
-    if d.shape[0] == 1 and len(cleaned_list) > 1:  # binary returns 1-D
-        d = d.T
-    if d.shape[1] == 1:
-        p = 1 / (1 + np.exp(-d[:, 0]))
-        return np.column_stack([1 - p, p])
-    return np.apply_along_axis(_softmax, 1, d)
-
-
-def _legacy_lstm_clean(text):
-    """Purane (emoji ke bina train hue) LSTM ka cleaner."""
-    text = str(text).encode("ascii", "ignore").decode().lower()
-    text = re.sub(r"\bnot\s+(\w+)", r"not_\1", text)
-    text = re.sub(r"\bnever\s+(\w+)", r"never_\1", text)
-    text = re.sub(r"\bno\s+(\w+)", r"no_\1", text)
-    text = re.sub(r"http\S+", "", text)
-    text = re.sub(r"[^a-zA-Z0-9\s_]", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
-
-
-# ============================================================
-# 🧠 PREDICTION (batch - list of texts in, probabilities out)
-# ============================================================
-def predict_proba(engine, texts):
-    """Returns (cleaned_texts, sent_probs[n,2], sent_classes, cap_probs[n,k], cap_classes)."""
-    if engine == "Deep Learning LSTM":
-        from tensorflow.keras.preprocessing.sequence import pad_sequences
-
-        m = load_lstm_models()
-        cleaned = [clean_text(t) if m["emoji_aware"] else _legacy_lstm_clean(t) for t in texts]
-        seq = pad_sequences(m["tokenizer"].texts_to_sequences(cleaned), maxlen=m["max_len"],
-                            padding="post", truncating="post")
-        sp = m["sent"].predict(seq, batch_size=512, verbose=0)
-        cp = m["cap"].predict(seq, batch_size=512, verbose=0)
-        return cleaned, sp, m["sent_enc"].classes_, cp, m["cap_enc"].classes_
-
-    m = load_sklearn_models()
-    cleaned = [clean_text(t) for t in texts]
-
-    if engine == "Federated (FedAvg SGD)":
-        sp = m["fed_sent"]["model"].predict_proba(m["fed_sent"]["vectorizer"].transform(cleaned))
-        cp = m["fed_cap"]["model"].predict_proba(m["fed_cap"]["vectorizer"].transform(cleaned))
-        return cleaned, sp, m["fed_sent"]["encoder"].classes_, cp, m["fed_cap"]["encoder"].classes_
-
-    lr_sp = m["lr_sent"]["model"].predict_proba(cleaned)
-    lr_cp = m["lr_cap"]["model"].predict_proba(cleaned)
-    svm_sp = _svm_proba(m["svm_sent"]["model"], cleaned)
-    svm_cp = _svm_proba(m["svm_cap"]["model"], cleaned)
-    if engine == "Logistic Regression":
-        sp, cp = lr_sp, lr_cp
-    elif engine == "Linear SVC":
-        sp, cp = svm_sp, svm_cp
-    else:
-        sp, cp = (lr_sp + svm_sp) / 2, (lr_cp + svm_cp) / 2
-    return cleaned, sp, m["lr_sent"]["encoder"].classes_, cp, m["lr_cap"]["encoder"].classes_
-
-
-def predict_one(engine, text):
-    cleaned, sp, s_cls, cp, c_cls = predict_proba(engine, [text])
-    s_idx = int(np.argmax(sp[0]))
-    capitals = sorted(zip(c_cls, cp[0]), key=lambda x: x[1], reverse=True)
-    return {
-        "cleaned": cleaned[0],
-        "sentiment": s_cls[s_idx],
-        "sentiment_conf": float(sp[0][s_idx]),
-        "sentiment_probs": dict(zip(s_cls, map(float, sp[0]))),
-        "capitals": [(c, float(p)) for c, p in capitals],
-    }
-
-
-# ============================================================
-# 📊 CHARTS
-# ============================================================
-def sentiment_gauge(result):
-    pos = result["sentiment_probs"].get("Positive", 0.0) * 100
+def gauge(value: float | None) -> go.Figure:
     fig = go.Figure(go.Indicator(
-        mode="gauge+number", value=pos,
-        number={"suffix": "%", "valueformat": ".1f"},
-        title={"text": "Positive probability"},
+        mode="gauge+number",
+        value=0 if value is None else round(value * 100, 1),
+        number={"suffix": "%", "font": {"size": 72, "color": "#fff"}, "valueformat": ".1f"},
         gauge={
-            "axis": {"range": [0, 100]},
-            "bar": {"color": POS_COLOR if pos >= 50 else NEG_COLOR},
-            "steps": [{"range": [0, 50], "color": "rgba(239,68,68,0.15)"},
-                      {"range": [50, 100], "color": "rgba(34,197,94,0.15)"}],
-            "threshold": {"line": {"color": "#94a3b8", "width": 2}, "value": 50},
+            "axis": {"range": [0, 100], "tickwidth": 1, "tickcolor": "#e5e7eb",
+                     "tickfont": {"color": "#e5e7eb", "size": 13}, "dtick": 20},
+            "bar": {"color": CYAN, "thickness": 0.6},
+            "bgcolor": ROW, "borderwidth": 0,
         },
     ))
-    fig.update_layout(height=230, margin=dict(t=40, b=10, l=30, r=30))
+    fig.update_layout(height=340, margin=dict(l=50, r=50, t=30, b=30),
+                      paper_bgcolor="rgba(0,0,0,0)", font_color="#e5e7eb")
     return fig
 
 
-def capital_bar(capitals, top_n=7):
-    top = capitals[:top_n][::-1]
-    fig = go.Figure(go.Bar(
-        x=[p * 100 for _, p in top], y=[c for c, _ in top], orientation="h",
-        marker_color=ACCENT, text=[f"{p * 100:.1f}%" for _, p in top], textposition="outside",
-    ))
-    fig.update_layout(height=330, margin=dict(t=10, b=10, l=10, r=40),
-                      xaxis=dict(title="Probability (%)", range=[0, 110]))
+def capital_rows(probs: dict[str, float]) -> str:
+    return "".join(
+        f'<div class="caprow"><span class="n">{html.escape(n)}</span>'
+        f'<div class="t"><div style="width:{p*100:.2f}%"></div></div>'
+        f'<span class="p">{p*100:.2f}%</span></div>'
+        for n, p in probs.items())
+
+
+def capital_chart(probs: dict[str, float]) -> go.Figure:
+    names = list(probs)[::-1]
+    vals = [probs[n] * 100 for n in names]
+    fig = go.Figure(go.Bar(x=vals, y=names, orientation="h", marker_color=CYAN,
+                           hovertemplate="%{y}: %{x:.2f}%<extra></extra>"))
+    fig.update_layout(
+        height=60 + 55 * len(names), margin=dict(l=10, r=10, t=10, b=30),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=ROW, bargap=0.2,
+        font=dict(color="#94a3b8", size=13),
+        xaxis=dict(gridcolor="rgba(0,0,0,0)", zeroline=False),
+        yaxis=dict(gridcolor="#334155", showgrid=True),
+    )
     return fig
 
 
-# ============================================================
-# 🖥️ LAYOUT
-# ============================================================
-st.title("🧠 Sentiment & Capital Intelligence")
-st.caption("Sentence (emojis ke saath) likhein: model Sentiment (Positive / Negative) "
-           "aur 16 types mein se Capital predict karega.")
-
+# ------------------------------------------------------------------ sidebar
 with st.sidebar:
-    st.header("⚙️ Settings")
-    engine = st.selectbox("AI engine", ENGINES, index=0)
-    if engine == "Deep Learning LSTM":
-        st.info("LSTM pehli dafa load hone mein kuch second lagata hai (TensorFlow).")
-    st.divider()
-    st.markdown("**Emojis 😊 📉 🚀** remove nahi hote. LR, SVM, Federated aur naya LSTM "
-                "unhe prediction mein use karte hain.")
+    st.markdown("### ⚙️ Settings")
+    top_n = st.slider("Capitals to show", 3, 16, 7)
+    padding = st.radio("LSTM padding (must match training)", ["post", "pre"], horizontal=True,
+                       help="Use the same value as pad_sequences(..., padding=...) in your training code.")
+    st.caption(f"Model folder: `{M.MODEL_DIR}`")
 
-tab_predict, tab_batch, tab_perf, tab_about = st.tabs(
-    ["🔮 Predict", "📂 Batch CSV", "📊 Model Performance", "ℹ️ About"])
+# ------------------------------------------------------------------ layout
+st.markdown('<h1 class="title">🧠 MULTI-MODEL SENTIMENT &amp; CAPITAL INTEL SYSTEM</h1>',
+            unsafe_allow_html=True)
+left, _, right = st.columns([1, 0.12, 2.1])
+res: M.Prediction | None = st.session_state.get("res")
 
-# ---------------------------- PREDICT ----------------------------
-with tab_predict:
-    if "text_input" not in st.session_state:
-        st.session_state.text_input = EXAMPLES[0]
+with left:
+    st.markdown('<h3 class="sec">SELECT AI ENGINE MODEL</h3>', unsafe_allow_html=True)
+    engine = st.selectbox("engine", M.available_engines(), label_visibility="collapsed")
 
-    st.markdown("**Examples:**")
-    cols = st.columns(len(EXAMPLES))
-    for col, ex in zip(cols, EXAMPLES):
-        if col.button(ex[:28] + ("…" if len(ex) > 28 else ""), key=f"ex_{ex}", use_container_width=True):
-            st.session_state.text_input = ex
+    st.markdown('<h3 class="sec">INPUT RAW TEXT CONTEXT</h3>', unsafe_allow_html=True)
+    text = st.text_area("text", height=175, label_visibility="collapsed",
+                        value="i doubt your theory would hold up he said feeling a bit superior")
 
-    text = st.text_area("Sentence", key="text_input", height=110,
-                        placeholder="e.g. 😊 My team is doing amazing work 🚀")
-    run = st.button("🚀 Predict", type="primary")
-
-    if run:
-        if not text.strip():
-            st.warning("Pehle koi sentence likhein.")
+    if st.button("EXECUTE INFERENCE ENGINE", width="stretch"):
+        miss = M.missing(engine)
+        if miss:
+            st.error("Missing model files:\n\n" + "\n".join(f"- `{m}`" for m in miss))
+        elif not text.strip():
+            st.warning("Please enter some text.")
         else:
             try:
-                res = predict_one(engine, text)
-            except FileNotFoundError as e:
-                st.error(f"Model file nahi mili: `{e.filename}`. Saari .pkl / .keras files project folder mein honi chahiye.")
-                st.stop()
-            except Exception as e:  # e.g. TensorFlow load issue
-                st.error(f"{engine} se prediction nahi ho saki: {e}")
-                st.stop()
+                with st.spinner("Running inference…"):
+                    res = get_engine(engine, padding).predict(text)
+                st.session_state["res"] = res
+            except Exception as e:
+                st.error(f"Prediction failed: {type(e).__name__}: {e}")
+                st.info("Open **Model diagnostics** at the bottom of the page to see what each file contains.")
 
-            st.markdown("##### 🧹 Cleaned text (jo model ne dekha)")
-            st.code(res["cleaned"] or "(empty)", language=None)
+    st.markdown('<div class="lbl">PARSED ENGINE OUTPUT TEXT</div>', unsafe_allow_html=True)
+    st.text_area("parsed", value=res.parsed_text if res else "", height=120,
+                 disabled=True, label_visibility="collapsed")
 
-            left, right = st.columns([1, 1.4], gap="large")
-            with left:
-                color = POS_COLOR if res["sentiment"].lower() == "positive" else NEG_COLOR
-                icon = "😊" if res["sentiment"].lower() == "positive" else "😞"
-                st.markdown(f"### Sentiment: <span style='color:{color}'>{icon} {res['sentiment'].upper()}</span>",
-                            unsafe_allow_html=True)
-                st.metric("Confidence", f"{res['sentiment_conf'] * 100:.2f}%")
-                st.plotly_chart(sentiment_gauge(res), use_container_width=True)
-            with right:
-                top_cap, top_p = res["capitals"][0]
-                st.markdown(f"### Capital: <span style='color:{ACCENT}'>{top_cap}</span>", unsafe_allow_html=True)
-                st.metric("Confidence", f"{top_p * 100:.2f}%")
-                st.plotly_chart(capital_bar(res["capitals"]), use_container_width=True)
-
-            with st.expander("🔍 Compare all engines on this sentence"):
-                rows = []
-                for eng in ENGINES:
-                    try:
-                        r = predict_one(eng, text)
-                        rows.append({"Engine": eng, "Sentiment": r["sentiment"],
-                                     "Sentiment conf.": f"{r['sentiment_conf'] * 100:.1f}%",
-                                     "Capital": r["capitals"][0][0],
-                                     "Capital conf.": f"{r['capitals'][0][1] * 100:.1f}%"})
-                    except Exception as e:
-                        rows.append({"Engine": eng, "Sentiment": f"error: {e}"})
-                st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
-
-# ---------------------------- BATCH CSV ----------------------------
-with tab_batch:
-    st.markdown(f"CSV upload karein, text column chunein, aur **{engine}** se saari rows predict karein.")
-    up = st.file_uploader("CSV file", type=["csv"])
-    if up is not None:
-        try:
-            bdf = pd.read_csv(up, low_memory=False)
-        except UnicodeDecodeError:
-            up.seek(0)
-            bdf = pd.read_csv(up, low_memory=False, encoding="latin-1")
-        st.write(f"Rows: **{len(bdf):,}**")
-        text_cols = [c for c in bdf.columns if bdf[c].dtype == object] or list(bdf.columns)
-        default = text_cols.index("Capitals Text Generation") if "Capitals Text Generation" in text_cols else 0
-        col = st.selectbox("Text column", text_cols, index=default)
-        max_rows = st.number_input("Max rows to predict", 1, len(bdf), min(len(bdf), 5000), step=1000)
-        if st.button("▶️ Run batch prediction", type="primary"):
-            sub = bdf.head(int(max_rows)).copy()
-            texts = sub[col].fillna("").astype(str).tolist()
-            out_cleaned, out_sent, out_sconf, out_cap, out_cconf = [], [], [], [], []
-            bar = st.progress(0.0, text="Predicting...")
-            chunk = 2000
-            for i in range(0, len(texts), chunk):
-                cleaned, sp, s_cls, cp, c_cls = predict_proba(engine, texts[i:i + chunk])
-                out_cleaned += cleaned
-                out_sent += list(s_cls[np.argmax(sp, axis=1)])
-                out_sconf += list(np.max(sp, axis=1))
-                out_cap += list(c_cls[np.argmax(cp, axis=1)])
-                out_cconf += list(np.max(cp, axis=1))
-                bar.progress(min(1.0, (i + chunk) / len(texts)), text=f"Predicting... {min(i + chunk, len(texts)):,}/{len(texts):,}")
-            bar.empty()
-            sub["Cleaned Text"] = out_cleaned
-            sub["Predicted Sentiment"] = out_sent
-            sub["Sentiment Confidence"] = np.round(out_sconf, 4)
-            sub["Predicted Capital (model)"] = out_cap
-            sub["Capital Confidence"] = np.round(out_cconf, 4)
-
-            c1, c2 = st.columns(2)
-            with c1:
-                vc = sub["Predicted Sentiment"].value_counts()
-                fig = go.Figure(go.Pie(labels=vc.index, values=vc.values, hole=0.5,
-                                       marker_colors=[POS_COLOR if l == "Positive" else NEG_COLOR for l in vc.index]))
-                fig.update_layout(height=300, margin=dict(t=30, b=10), title="Sentiment distribution")
-                st.plotly_chart(fig, use_container_width=True)
-            with c2:
-                vc = sub["Predicted Capital (model)"].value_counts().head(10)[::-1]
-                fig = go.Figure(go.Bar(x=vc.values, y=vc.index, orientation="h", marker_color=ACCENT))
-                fig.update_layout(height=300, margin=dict(t=30, b=10), title="Top predicted capitals")
-                st.plotly_chart(fig, use_container_width=True)
-
-            if "Sentiment Label" in sub.columns:
-                acc = (sub["Sentiment Label"].astype(str).str.strip().str.capitalize() == sub["Predicted Sentiment"]).mean()
-                st.metric("Sentiment agreement with 'Sentiment Label' column", f"{acc * 100:.2f}%")
-
-            st.dataframe(sub, use_container_width=True, height=350)
-            st.download_button("⬇️ Download predictions CSV", sub.to_csv(index=False).encode("utf-8-sig"),
-                               file_name="predictions.csv", mime="text/csv")
-
-# ---------------------------- MODEL PERFORMANCE ----------------------------
-with tab_perf:
-    st.markdown("Held-out test set (20%, duplicate texts removed before splitting) par results.")
-    rows = []
-    if os.path.exists("retrain_metrics_report.json"):
-        rep = json.load(open("retrain_metrics_report.json", encoding="utf-8"))
-        for key, name in [("lr_sentiment", "Logistic Regression"), ("svm_sentiment", "Linear SVC")]:
-            if key in rep:
-                cap_key = key.replace("sentiment", "capital")
-                rows.append({"Model": name,
-                             "Sentiment accuracy": rep[key]["accuracy"],
-                             "Sentiment F1 (macro)": rep[key]["f1_macro"],
-                             "Capital accuracy": rep.get(cap_key, {}).get("accuracy"),
-                             "Capital F1 (macro)": rep.get(cap_key, {}).get("f1_macro")})
-    if os.path.exists("federated_metrics_report.json"):
-        rep = json.load(open("federated_metrics_report.json", encoding="utf-8"))
-        rows.append({"Model": "Federated (FedAvg SGD)",
-                     "Sentiment accuracy": rep["sentiment"]["accuracy"],
-                     "Sentiment F1 (macro)": rep["sentiment"]["f1_macro"],
-                     "Capital accuracy": rep["capital"]["accuracy"],
-                     "Capital F1 (macro)": rep["capital"]["f1_macro"]})
-    if os.path.exists("lstm_metrics_report.json"):
-        rep = json.load(open("lstm_metrics_report.json", encoding="utf-8"))
-        rows.append({"Model": "Deep Learning LSTM",
-                     "Sentiment accuracy": rep.get("sentiment_accuracy"),
-                     "Capital accuracy": rep.get("capital_accuracy")})
-
-    if rows:
-        perf = pd.DataFrame(rows)
-        st.dataframe(perf.style.format({c: "{:.2%}" for c in perf.columns if c != "Model"}, na_rep="—"),
-                     hide_index=True, use_container_width=True)
-        fig = go.Figure()
-        for metric, color in [("Sentiment accuracy", POS_COLOR), ("Capital accuracy", ACCENT)]:
-            fig.add_bar(name=metric, x=perf["Model"], y=perf[metric] * 100, marker_color=color,
-                        text=[f"{v * 100:.1f}%" if pd.notna(v) else "" for v in perf[metric]],
-                        textposition="outside")
-        fig.update_layout(barmode="group", height=380, yaxis=dict(title="Accuracy (%)", range=[0, 110]),
-                          margin=dict(t=20, b=10))
-        st.plotly_chart(fig, use_container_width=True)
+    st.markdown('<hr class="sep">', unsafe_allow_html=True)
+    st.markdown('<h3 class="sec">ENGINE SENTIMENT PROJECTION</h3>', unsafe_allow_html=True)
+    if res:
+        c = res.confidence * 100
+        st.markdown(
+            f'<div class="verdict">{html.escape(res.sentiment.upper())}</div>'
+            f'<div class="conf">Confidence Matrix: {c:.2f}%</div>'
+            f'<div class="cbar"><div style="width:{c:.2f}%"></div></div>',
+            unsafe_allow_html=True)
     else:
-        st.info("Abhi koi metrics report nahi mili. Pehle training scripts chalayein.")
+        st.markdown('<div class="verdict" style="color:#475569">—</div>'
+                    '<div class="conf">Confidence Matrix: —</div><div class="cbar"></div>',
+                    unsafe_allow_html=True)
 
-    images = [("sentiment_confusion_matrix.png", "Sentiment - LR"),
-              ("svm_sentiment_confusion.png", "Sentiment - Linear SVC"),
-              ("capital_confusion_matrix.png", "Capital - LR")]
-    images = [(p, c) for p, c in images if os.path.exists(p)]
-    if images:
-        st.markdown("#### Confusion matrices")
-        for col, (path, cap) in zip(st.columns(len(images)), images):
-            col.image(path, caption=cap, use_container_width=True)
+with right:
+    st.plotly_chart(gauge(res.confidence if res else None), config={"displayModeBar": False})
+    st.markdown(f'<h3 class="sec">TOP {top_n} PREDICTED CAPITALS</h3>', unsafe_allow_html=True)
+    if res:
+        top = dict(list(res.capital_probs.items())[:top_n])
+        st.markdown(capital_rows(top), unsafe_allow_html=True)
+        st.plotly_chart(capital_chart(top), config={"displayModeBar": False})
+    else:
+        st.info("Press **EXECUTE INFERENCE ENGINE** to see the capital probabilities.")
 
-# ---------------------------- ABOUT ----------------------------
-with tab_about:
-    st.markdown("""
-#### Project
-Social media text se **Sentiment** (Positive / Negative) aur **Capital** type
-(Emotional, Social, Economic, Religious, ... 16 classes) predict karna.
-
-#### Engines
-| Engine | Kya hai |
-|---|---|
-| **LR + SVM Ensemble** | Logistic Regression aur Linear SVC ki probabilities ka average |
-| **Logistic Regression** | TF-IDF (1-2 grams, 50k features) + LR |
-| **Linear SVC** | TF-IDF + Linear Support Vector Classifier |
-| **Federated (FedAvg SGD)** | 5 clients, 10 rounds federated averaging, SGD (log-loss) |
-| **Deep Learning LSTM** | Embedding + 2x Bidirectional LSTM |
-
-#### Preprocessing (`text_preprocessing.py`)
-1. Dataset ke kharab encoded emojis repair (`Ã°Å¸Å½â€œ` → 🎓)
-2. Lowercase, URLs / HTML remove
-3. **Emojis rakhe jaate hain** aur alag tokens bante hain
-4. Negation handling: `not good` → `not_good` (punctuation / "but" tak)
-
-#### Re-training
-```
-.\\.venv\\Scripts\\python.exe retrain_lr_svm_fixed.py   # LR + Linear SVC
-.\\.venv\\Scripts\\python.exe train_federated_sgd.py    # Federated SGD
-.\\.venv\\Scripts\\python.exe train_lstm.py             # LSTM (CPU par ~2-3 ghante)
-```
-""")
+# ------------------------------------------------------------------ diagnostics
+with st.expander("🔧 Model diagnostics (which files were found and what they contain)"):
+    st.dataframe(pd.DataFrame(M.diagnostics()), hide_index=True)
+    try:
+        _, info = M.make_cleaner()
+        st.caption(f"Text cleaner in use: {info}")
+    except Exception as e:
+        st.caption(f"Text cleaner error: {e}")
+    if res:
+        st.caption(f"Last prediction engine: {res.engine}")

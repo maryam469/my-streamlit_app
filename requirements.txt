@@ -1,8 +1,10 @@
 streamlit
+plotly
 numpy
 pandas
 scikit-learn
-nltk
 joblib
-plotly
+nltk
+# Change to the TensorFlow version you trained with (run: pip show tensorflow).
+# TF 2.13-2.15 -> choose Python 3.11 on Streamlit Cloud; TF 2.16+ -> Python 3.12.
 tensorflow==2.15.1
