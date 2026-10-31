@@ -1,0 +1,8 @@
+streamlit
+plotly
+pandas
+numpy==1.26.4
+pyarrow<21
+scikit-learn
+tensorflow==2.16.1
+protobuf==6.33.6
